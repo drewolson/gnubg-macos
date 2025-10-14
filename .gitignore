@@ -1,0 +1,54 @@
+# Build artifacts
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.dylib
+.libs/
+.deps/
+
+# Autotools generated files
+Makefile
+Makefile.in
+config.h
+config.h.in
+config.log
+config.status
+configure
+aclocal.m4
+autom4te.cache/
+stamp-h1
+libtool
+
+# macOS specific
+.DS_Store
+*.dSYM/
+
+# Compiled executables
+gnubg
+bearoffdump
+makebearoff
+makehyper
+makeweights
+
+# Python
+*.pyc
+*.pyo
+__pycache__/
+
+# Editor/IDE files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+*.sublime-*
+
+# Build directories
+build/
+dist/
+
+# Other generated files
+*.tar.gz
+*.zip
