@@ -28,18 +28,37 @@ Establishing proper version control and documentation for macOS-specific fork
 
 ---
 
-## Build System Changes
-
-_(Document your build system changes here as you identify them)_
+## 2025-10-14 - macOS Readline Compatibility Fix
 
 **Changes:**
-- (To be documented: specific build system modifications for macOS)
+- Modified readline initialization in gnubg.c to fix compilation on macOS
+- Changed `rl_filename_quote_characters = szCommandSeparators` to only set `rl_basic_word_break_characters`
+- Changed `rl_completion_entry_function = NullGenerator` to `rl_completion_entry_function = NULL`
 
 **Reason:**
-- (To be documented: why these changes were needed for macOS compatibility)
+Modern macOS readline library has different function signature expectations. The `rl_filename_quote_characters` assignment was causing build issues, and `NullGenerator` should be NULL for proper readline 4.2+ compatibility on macOS.
 
 **Files affected:**
-- (To be documented: configure.ac, Makefile.am, etc.)
+- `gnubg.c` (line 4403, 4406)
+
+---
+
+## 2025-10-14 - Added cglm Graphics Library
+
+**Changes:**
+- Added complete cglm (OpenGL Mathematics) library to the project
+- Includes headers for matrix operations, vectors, quaternions, affine transforms, camera operations, and other 3D math utilities
+- Added Apple Silicon SIMD optimizations (applesimd.h)
+
+**Reason:**
+Required for 3D board rendering and graphics operations. The cglm library provides optimized math operations for OpenGL-based rendering, with specific support for macOS/Apple Silicon SIMD instructions.
+
+**Files affected:**
+- `cglm/` (entire directory - new, ~200+ header files)
+- Includes core functionality in cglm/*.h
+- SIMD optimizations in cglm/simd/
+- Structured API in cglm/struct/
+- Platform-specific optimizations in cglm/applesimd.h
 
 ---
 
