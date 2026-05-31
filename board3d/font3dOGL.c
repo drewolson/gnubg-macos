@@ -19,7 +19,11 @@
 #include "config.h"
 #include "legacyGLinc.h"
 
+#if defined(USE_APPLE_OPENGL)
+#include <OpenGL/glu.h>	/* Used for vertex tesselation */
+#else
 #include <GL/glu.h>	/* Used for vertex tesselation */
+#endif
 
 #include "fun3d.h"
 #include "util.h"
@@ -272,7 +276,9 @@ FreeTextFont(OGLFont* ppFont)
 #endif
 
 #if defined(USE_APPLE_OPENGL)
-#define GLUFUN(X) X
+/* macOS GLU expects callbacks of type GLvoid (*)(void); cast to match,
+ * otherwise clang treats the mismatch as a hard error. */
+#define GLUFUN(X) (GLvoid (*)(void))X
 #elif defined(__GNUC__)
 #if defined(WIN32)
 typedef APIENTRY GLvoid(*_GLUfuncptr) ();

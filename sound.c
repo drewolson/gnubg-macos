@@ -155,183 +155,33 @@ PlaySound_QuickTime(const char *cSoundFilename)
 #include <CoreAudio/CoreAudioTypes.h>
 #include <ApplicationServices/ApplicationServices.h>
 
-static pthread_mutex_t mutexCAAccess;
-static AudioFileID audioFile;
-static AUGraph theGraph;
-static int fCAInitialised = FALSE;
-static Float64 fileDuration = 0.0;
-
-#define CoreAudioChkError(func,context,ret) \
-	{ \
-		int result; \
-		if ((result = func)!=0) \
-		{ \
-			outputf(_("Apple CoreAudio Error (" context "): %d\n"), result); \
-		        pthread_mutex_unlock (&mutexCAAccess); \
-			return ret; \
-		} \
-	}
-Float64 CoreAudio_PrepareFileAU(AudioUnit * au, AudioStreamBasicDescription * fileFormat, AudioFileID audioFile);
-void CoreAudio_MakeSimpleGraph(AUGraph * theGraph, AudioUnit * fileAU,
-                               AudioStreamBasicDescription * fileFormat, AudioFileID audioFile);
-
-void
-CoreAudio_ShutDown()
-{
-    AUGraphStop(theGraph);
-    AUGraphUninitialize(theGraph);
-    AudioFileClose(audioFile);
-    AUGraphClose(theGraph);
-}
-
-void
-CoreAudio_PlayFile_Thread(void *UNUSED(auGraph))
-{
-    /* Start playing the sound file, and wait for it to complete */
-    AUGraphStart(theGraph);
-    g_usleep((int) (1000.0 * 1000.0 * fileDuration));
-
-    CoreAudio_ShutDown();
-
-    /* Shutdown the audio stream */
-    pthread_mutex_unlock(&mutexCAAccess);
-}
+/*
+ * macOS sound playback.
+ *
+ * The original implementation used the long-deprecated AUGraph/AudioToolbox
+ * graph API, which fails on modern macOS / Apple Silicon and raised an error
+ * dialog for every sound event. AudioServicesPlaySystemSound proved unreliable
+ * (silent for ordinary WAV files), so playback is handed to /usr/bin/afplay,
+ * the audio player built into every macOS.
+ *
+ * afplay is spawned asynchronously with an argv array (not a shell string) so
+ * paths containing spaces -- e.g. inside "GNU Backgammon.app" -- are handled
+ * correctly, and an absolute path is used so it is found even when the app is
+ * launched from Finder with a minimal PATH.
+ */
 
 void
 CoreAudio_PlayFile(char *const fileName)
 {
-    pthread_t CAThread;
+    char *argv[] = { (char *) "/usr/bin/afplay", fileName, NULL };
+    GError *error = NULL;
 
-    /* first time through initialise the mutex */
-    if (!fCAInitialised) {
-        pthread_mutex_init(&mutexCAAccess, NULL);
-        fCAInitialised = TRUE;
+    if (!g_spawn_async(NULL, argv, NULL,
+                       G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL,
+                       NULL, NULL, NULL, &error)) {
+        outputf(_("Could not play sound %s: %s\n"), fileName, error->message);
+        g_error_free(error);
     }
-
-    /*  Apparently CoreAudio is not fully reentrant */
-    pthread_mutex_lock(&mutexCAAccess);
-
-    /* Open the sound file */
-    CFURLRef outInputFileURL = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-                                                                       (const UInt8 *) fileName, strlen(fileName),
-                                                                       false);
-    if (AudioFileOpenURL(outInputFileURL, kAudioFileReadPermission, 0, &audioFile)) {
-        outputf(_("Apple CoreAudio Error, can't find %s\n"), fileName);
-        return;
-    }
-
-    /* Get properties of the file */
-    AudioStreamBasicDescription fileFormat;
-    UInt32 propsize = sizeof(AudioStreamBasicDescription);
-    CoreAudioChkError(AudioFileGetProperty(audioFile, kAudioFilePropertyDataFormat,
-                                           &propsize, &fileFormat), "AudioFileGetProperty Dataformat",);
-
-    /* Setup sound state */
-    AudioUnit fileAU;
-    memset(&fileAU, 0, sizeof(AudioUnit));
-    memset(&theGraph, 0, sizeof(AUGraph));
-
-    /* Setup a simple output graph and AU */
-    CoreAudio_MakeSimpleGraph(&theGraph, &fileAU, &fileFormat, audioFile);
-
-    /* Load the file contents */
-    fileDuration = CoreAudio_PrepareFileAU(&fileAU, &fileFormat, audioFile);
-
-    if (pthread_create(&CAThread, 0L, (void *) CoreAudio_PlayFile_Thread, NULL) == 0)
-        pthread_detach(CAThread);
-    else {
-        CoreAudio_ShutDown();
-        pthread_mutex_unlock(&mutexCAAccess);
-    }
-}
-
-Float64
-CoreAudio_PrepareFileAU(AudioUnit *au, AudioStreamBasicDescription *fileFormat, AudioFileID audioFile)
-{
-    UInt64 nPackets;
-    UInt32 propsize = sizeof(nPackets);
-    CoreAudioChkError(AudioFileGetProperty(audioFile, kAudioFilePropertyAudioDataPacketCount,
-                                           &propsize, &nPackets), "AudioFileGetProperty PacketCount", 0.0);
-
-    /* Get playing time in seconds */
-    fileDuration = (nPackets * fileFormat->mFramesPerPacket) / fileFormat->mSampleRate;
-
-    /* Initialize the region */
-    ScheduledAudioFileRegion rgn;
-    memset(&rgn, 0, sizeof(rgn));
-    rgn.mTimeStamp.mFlags = kAudioTimeStampSampleTimeValid;
-    rgn.mTimeStamp.mSampleTime = 0;
-    rgn.mCompletionProc = NULL;
-    rgn.mCompletionProcUserData = NULL;
-    rgn.mAudioFile = audioFile;
-    rgn.mLoopCount = 1;
-    rgn.mStartFrame = 0;
-    rgn.mFramesToPlay = (UInt32) (nPackets * fileFormat->mFramesPerPacket);
-
-    CoreAudioChkError(AudioUnitSetProperty(*au, kAudioUnitProperty_ScheduledFileRegion,
-                                           kAudioUnitScope_Global, 0, &rgn, sizeof(rgn)),
-                      "kAudioUnitProperty_ScheduledFileRegion", 0.0);
-
-    /* Disable priming entirely instead of doing it for 0 samples
-     * to fix bug #64596. As far as I understand it, priming would
-     * matter only for AAC encoded sources, which is not what we use */
-
-    CoreAudioChkError(AudioUnitSetProperty(*au, kAudioUnitProperty_ScheduledFilePrime,
-                                           kAudioUnitScope_Global, 0, NULL, 0),
-                      "kAudioUnitProperty_ScheduledFilePrime", 0.0);
-
-
-    /* Inform AU to start playing at next cycle */
-    AudioTimeStamp startTime;
-    memset(&startTime, 0, sizeof(startTime));
-    startTime.mFlags = kAudioTimeStampSampleTimeValid;
-    startTime.mSampleTime = -1;
-    CoreAudioChkError(AudioUnitSetProperty(*au, kAudioUnitProperty_ScheduleStartTimeStamp,
-                                           kAudioUnitScope_Global, 0, &startTime, sizeof(startTime)),
-                      "AudioUnitSetproperty StartTime", 0.0);
-
-    return fileDuration;
-}
-
-void
-CoreAudio_MakeSimpleGraph(AUGraph *theGraph, AudioUnit *fileAU, AudioStreamBasicDescription *UNUSED(fileFormat),
-                          AudioFileID audioFile)
-{
-    CoreAudioChkError(NewAUGraph(theGraph), "NewAUGraph",);
-
-    AudioComponentDescription cd;
-    memset(&cd, 0, sizeof(cd));
-
-    /* Initialize and add Output Node */
-    cd.componentType = kAudioUnitType_Output;
-    cd.componentSubType = kAudioUnitSubType_DefaultOutput;
-    cd.componentManufacturer = kAudioUnitManufacturer_Apple;
-
-    AUNode outputNode;
-    CoreAudioChkError(AUGraphAddNode(*theGraph, &cd, &outputNode), "AUGraphAddNode Output",);
-
-    /* Initialize and add the AU node */
-    AUNode fileNode;
-    cd.componentType = kAudioUnitType_Generator;
-    cd.componentSubType = kAudioUnitSubType_AudioFilePlayer;
-
-    CoreAudioChkError(AUGraphAddNode(*theGraph, &cd, &fileNode), "AUGraphAddNode AU",);
-
-    /* Make connections */
-    CoreAudioChkError(AUGraphOpen(*theGraph), "AUGraphOpen",);
-
-    /* Set Schedule properties and initialize the graph with the file */
-    AudioUnit anAU;
-    memset(&anAU, 0, sizeof(anAU));
-    CoreAudioChkError(AUGraphNodeInfo(*theGraph, fileNode, NULL, &anAU), "AUGraphNodeInfo",);
-
-    *fileAU = anAU;
-
-    CoreAudioChkError(AudioUnitSetProperty(*fileAU, kAudioUnitProperty_ScheduledFileIDs,
-                                           kAudioUnitScope_Global, 0, &audioFile, sizeof(audioFile)),
-                      "SetScheduleFile",);
-    CoreAudioChkError(AUGraphConnectNodeInput(*theGraph, fileNode, 0, outputNode, 0), "AUGraphConnectNodeInput",);
-    CoreAudioChkError(AUGraphInitialize(*theGraph), "AUGraphInitialize",);
 }
 
 #elif defined(HAVE_CANBERRA)
